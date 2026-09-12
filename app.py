@@ -3,6 +3,8 @@ import uuid
 import time
 import json
 import sqlite3
+import hashlib
+import secrets
 from datetime import datetime
 import streamlit as st
 from groq import Groq, APIStatusError, APIConnectionError
@@ -26,8 +28,16 @@ DB_PATH = "chatspark.db"
 def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            salt TEXT,
+            password_hash TEXT
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS chats (
             id TEXT PRIMARY KEY,
+            username TEXT,
             title TEXT,
             system_prompt TEXT,
             messages TEXT,
@@ -38,11 +48,40 @@ def get_db():
     return conn
 
 
-def save_chat(conn, chat_id, chat):
+def hash_password(password, salt):
+    return hashlib.sha256((salt + password).encode()).hexdigest()
+
+
+def create_user(conn, username, password):
+    salt = secrets.token_hex(16)
+    pw_hash = hash_password(password, salt)
+    try:
+        conn.execute(
+            "INSERT INTO users (username, salt, password_hash) VALUES (?, ?, ?)",
+            (username, salt, pw_hash),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def verify_user(conn, username, password):
+    row = conn.execute(
+        "SELECT salt, password_hash FROM users WHERE username = ?", (username,)
+    ).fetchone()
+    if not row:
+        return False
+    salt, stored_hash = row
+    return hash_password(password, salt) == stored_hash
+
+
+def save_chat(conn, chat_id, username, chat):
     conn.execute(
-        "REPLACE INTO chats (id, title, system_prompt, messages, updated_at) VALUES (?, ?, ?, ?, ?)",
+        "REPLACE INTO chats (id, username, title, system_prompt, messages, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         (
             chat_id,
+            username,
             chat["title"],
             chat["messages"][0]["content"],
             json.dumps(chat["messages"]),
@@ -57,19 +96,60 @@ def delete_chat_db(conn, chat_id):
     conn.commit()
 
 
-def load_all_chats(conn):
+def load_user_chats(conn, username):
     rows = conn.execute(
-        "SELECT id, title, messages FROM chats ORDER BY updated_at DESC"
+        "SELECT id, title, messages FROM chats WHERE username = ? ORDER BY updated_at DESC",
+        (username,),
     ).fetchall()
     return {row[0]: {"title": row[1], "messages": json.loads(row[2])} for row in rows}
 
 
-# ---------- App state ----------
-
 conn = get_db()
 
+
+# ---------- Auth screen ----------
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+if not st.session_state.user:
+    st.title("ChatSpark")
+    login_tab, signup_tab = st.tabs(["Log in", "Sign up"])
+
+    with login_tab:
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Log in", use_container_width=True)
+            if submitted:
+                if verify_user(conn, username, password):
+                    st.session_state.user = username
+                    st.rerun()
+                else:
+                    st.error("Incorrect username or password.")
+
+    with signup_tab:
+        with st.form("signup_form"):
+            new_username = st.text_input("Choose a username")
+            new_password = st.text_input("Choose a password", type="password")
+            signup_submitted = st.form_submit_button("Create account", use_container_width=True)
+            if signup_submitted:
+                if not new_username or not new_password:
+                    st.error("Username and password can't be empty.")
+                elif create_user(conn, new_username, new_password):
+                    st.success("Account created — you can log in now.")
+                else:
+                    st.error("That username is already taken.")
+
+    st.stop()
+
+username = st.session_state.user
+
+
+# ---------- App state (scoped to logged-in user) ----------
+
 if "chats" not in st.session_state:
-    st.session_state.chats = load_all_chats(conn)
+    st.session_state.chats = load_user_chats(conn, username)
 if "system_prompt" not in st.session_state:
     st.session_state.system_prompt = DEFAULT_SYSTEM_PROMPT
 if "renaming" not in st.session_state:
@@ -85,7 +165,7 @@ def new_chat():
         "messages": [{"role": "system", "content": st.session_state.system_prompt}],
     }
     st.session_state.active_chat = chat_id
-    save_chat(conn, chat_id, st.session_state.chats[chat_id])
+    save_chat(conn, chat_id, username, st.session_state.chats[chat_id])
 
 
 if "active_chat" not in st.session_state or st.session_state.active_chat not in st.session_state.chats:
@@ -127,6 +207,14 @@ def run_completion(messages, model, temperature):
 # ---------- Sidebar ----------
 
 with st.sidebar:
+    st.caption(f"Logged in as **{username}**")
+    if st.button("Log out", use_container_width=True, icon=":material/logout:"):
+        st.session_state.user = None
+        st.session_state.pop("chats", None)
+        st.session_state.pop("active_chat", None)
+        st.rerun()
+
+    st.divider()
     st.subheader("Chats")
     if st.button("New Chat", use_container_width=True, icon=":material/add:"):
         new_chat()
@@ -160,7 +248,7 @@ with st.sidebar:
             with rcols[0]:
                 if st.button("Save", key=f"save_{cid}", use_container_width=True, icon=":material/check:"):
                     chat["title"] = new_title or chat["title"]
-                    save_chat(conn, cid, chat)
+                    save_chat(conn, cid, username, chat)
                     st.session_state.renaming = None
                     st.rerun()
             with rcols[1]:
@@ -211,7 +299,7 @@ with st.sidebar:
             "role": "system",
             "content": new_system_prompt,
         }
-        save_chat(conn, st.session_state.active_chat, st.session_state.chats[st.session_state.active_chat])
+        save_chat(conn, st.session_state.active_chat, username, st.session_state.chats[st.session_state.active_chat])
 
     st.divider()
     active = st.session_state.chats[st.session_state.active_chat]
@@ -263,7 +351,7 @@ if prompt:
     })
     if active_chat["title"] == "New Chat":
         active_chat["title"] = prompt[:30] + ("..." if len(prompt) > 30 else "")
-    save_chat(conn, st.session_state.active_chat, active_chat)
+    save_chat(conn, st.session_state.active_chat, username, active_chat)
 
 if prompt or st.session_state.get("regenerate"):
     st.session_state.regenerate = False
@@ -298,7 +386,7 @@ if prompt or st.session_state.get("regenerate"):
             "content": partial,
             "timestamp": datetime.now().strftime("%H:%M"),
         })
-        save_chat(conn, st.session_state.active_chat, active_chat)
+        save_chat(conn, st.session_state.active_chat, username, active_chat)
     else:
         if messages and messages[-1]["role"] == "user":
             messages.pop()
