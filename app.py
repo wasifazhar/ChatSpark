@@ -2,7 +2,7 @@ import os
 import streamlit as st
 from groq import Groq
 
-st.set_page_config(page_title="AI Chatbot", page_icon="🤖")
+st.set_page_config(page_title="ChatSpark", page_icon="🤖")
 st.title("AI Chatbot")
 
 api_key = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
