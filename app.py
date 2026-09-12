@@ -107,48 +107,11 @@ def load_user_chats(conn, username):
 conn = get_db()
 
 
-# ---------- Auth screen ----------
+# ---------- Auth (guest by default, login/signup optional via sidebar) ----------
 
 if "user" not in st.session_state:
-    st.session_state.user = None
-
-if not st.session_state.user:
-    st.title("ChatSpark")
-    login_tab, signup_tab, guest_tab = st.tabs(["Log in", "Sign up", "Continue as guest"])
-
-    with login_tab:
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Log in", use_container_width=True)
-            if submitted:
-                if verify_user(conn, username, password):
-                    st.session_state.user = username
-                    st.rerun()
-                else:
-                    st.error("Incorrect username or password.")
-
-    with signup_tab:
-        with st.form("signup_form"):
-            new_username = st.text_input("Choose a username")
-            new_password = st.text_input("Choose a password", type="password")
-            signup_submitted = st.form_submit_button("Create account", use_container_width=True)
-            if signup_submitted:
-                if not new_username or not new_password:
-                    st.error("Username and password can't be empty.")
-                elif create_user(conn, new_username, new_password):
-                    st.success("Account created — you can log in now.")
-                else:
-                    st.error("That username is already taken.")
-
-    with guest_tab:
-        st.caption("No account needed. Your chats won't be saved after you close or refresh the tab.")
-        if st.button("Continue as guest", use_container_width=True, icon=":material/person_outline:"):
-            st.session_state.user = f"guest_{uuid.uuid4().hex[:8]}"
-            st.session_state.is_guest = True
-            st.rerun()
-
-    st.stop()
+    st.session_state.user = f"guest_{uuid.uuid4().hex[:8]}"
+    st.session_state.is_guest = True
 
 username = st.session_state.user
 
@@ -228,15 +191,49 @@ def run_completion(messages, model, temperature):
 
 with st.sidebar:
     if st.session_state.get("is_guest"):
-        st.caption(f"Browsing as **guest** · chats won't be saved")
+        st.caption("Browsing as **guest** · chats won't be saved")
+        with st.popover("Log in / Sign up", use_container_width=True, icon=":material/login:"):
+            login_tab, signup_tab = st.tabs(["Log in", "Sign up"])
+
+            with login_tab:
+                with st.form("login_form"):
+                    login_username = st.text_input("Username")
+                    login_password = st.text_input("Password", type="password")
+                    submitted = st.form_submit_button("Log in", use_container_width=True)
+                    if submitted:
+                        if verify_user(conn, login_username, login_password):
+                            st.session_state.user = login_username
+                            st.session_state.pop("is_guest", None)
+                            st.session_state.pop("chats", None)
+                            st.session_state.pop("active_chat", None)
+                            st.rerun()
+                        else:
+                            st.error("Incorrect username or password.")
+
+            with signup_tab:
+                with st.form("signup_form"):
+                    new_username = st.text_input("Choose a username")
+                    new_password = st.text_input("Choose a password", type="password")
+                    signup_submitted = st.form_submit_button("Create account", use_container_width=True)
+                    if signup_submitted:
+                        if not new_username or not new_password:
+                            st.error("Username and password can't be empty.")
+                        elif create_user(conn, new_username, new_password):
+                            st.session_state.user = new_username
+                            st.session_state.pop("is_guest", None)
+                            st.session_state.pop("chats", None)
+                            st.session_state.pop("active_chat", None)
+                            st.rerun()
+                        else:
+                            st.error("That username is already taken.")
     else:
         st.caption(f"Logged in as **{username}**")
-    if st.button("Log out", use_container_width=True, icon=":material/logout:"):
-        st.session_state.user = None
-        st.session_state.pop("is_guest", None)
-        st.session_state.pop("chats", None)
-        st.session_state.pop("active_chat", None)
-        st.rerun()
+        if st.button("Log out", use_container_width=True, icon=":material/logout:"):
+            st.session_state.user = f"guest_{uuid.uuid4().hex[:8]}"
+            st.session_state.is_guest = True
+            st.session_state.pop("chats", None)
+            st.session_state.pop("active_chat", None)
+            st.rerun()
 
     st.divider()
     st.subheader("Chats")
