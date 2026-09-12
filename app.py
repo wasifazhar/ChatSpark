@@ -2,7 +2,7 @@ import os
 import uuid
 import time
 import streamlit as st
-from groq import Groq
+from groq import Groq, APIStatusError, APIConnectionError
 
 st.set_page_config(page_title="ChatSpark", page_icon=":material/bolt:", layout="wide")
 
@@ -26,12 +26,41 @@ def new_chat():
     st.session_state.active_chat = chat_id
 
 
+def run_completion(messages, model, temperature):
+    """Stream a completion, yielding text chunks. Raises a friendly message on failure."""
+    try:
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            stream=True,
+        )
+        for chunk in stream:
+            yield chunk.choices[0].delta.content or ""
+    except APIStatusError as e:
+        if e.status_code == 429:
+            raise RuntimeError(
+                "Rate limit reached. Groq's free tier caps requests per minute — "
+                "wait a bit and try again, or switch to a lighter model in the sidebar."
+            )
+        elif e.status_code == 401:
+            raise RuntimeError("Invalid or missing API key. Check your GROQ_API_KEY.")
+        elif e.status_code == 404:
+            raise RuntimeError(f"Model '{model}' isn't available on your account.")
+        else:
+            raise RuntimeError(f"Groq API error ({e.status_code}): {e.message}")
+    except APIConnectionError:
+        raise RuntimeError("Couldn't reach Groq's servers. Check your connection and try again.")
+
+
 if "chats" not in st.session_state:
     st.session_state.chats = {}
 if "system_prompt" not in st.session_state:
     st.session_state.system_prompt = DEFAULT_SYSTEM_PROMPT
 if "active_chat" not in st.session_state or st.session_state.active_chat not in st.session_state.chats:
     new_chat()
+if "renaming" not in st.session_state:
+    st.session_state.renaming = None
 
 with st.sidebar:
     st.subheader("Chats")
@@ -42,25 +71,42 @@ with st.sidebar:
     for cid, chat in sorted(
         st.session_state.chats.items(), key=lambda x: x[0], reverse=True
     ):
-        cols = st.columns([4, 1])
-        with cols[0]:
-            if st.button(
-                chat["title"],
-                key=f"select_{cid}",
-                use_container_width=True,
-                icon=":material/chat_bubble:",
-            ):
-                st.session_state.active_chat = cid
-                st.rerun()
-        with cols[1]:
-            if st.button("", key=f"delete_{cid}", icon=":material/delete:"):
-                del st.session_state.chats[cid]
-                if st.session_state.active_chat == cid:
-                    if st.session_state.chats:
-                        st.session_state.active_chat = next(iter(st.session_state.chats))
-                    else:
-                        new_chat()
-                st.rerun()
+        if st.session_state.renaming == cid:
+            new_title = st.text_input(
+                "Rename", value=chat["title"], key=f"rename_input_{cid}", label_visibility="collapsed"
+            )
+            rcols = st.columns([1, 1])
+            with rcols[0]:
+                if st.button("Save", key=f"save_{cid}", use_container_width=True, icon=":material/check:"):
+                    chat["title"] = new_title or chat["title"]
+                    st.session_state.renaming = None
+                    st.rerun()
+            with rcols[1]:
+                if st.button("Cancel", key=f"cancel_{cid}", use_container_width=True, icon=":material/close:"):
+                    st.session_state.renaming = None
+                    st.rerun()
+        else:
+            cols = st.columns([3, 1, 1])
+            with cols[0]:
+                if st.button(
+                    chat["title"], key=f"select_{cid}", use_container_width=True,
+                    icon=":material/chat_bubble:",
+                ):
+                    st.session_state.active_chat = cid
+                    st.rerun()
+            with cols[1]:
+                if st.button("", key=f"rename_{cid}", icon=":material/edit:"):
+                    st.session_state.renaming = cid
+                    st.rerun()
+            with cols[2]:
+                if st.button("", key=f"delete_{cid}", icon=":material/delete:"):
+                    del st.session_state.chats[cid]
+                    if st.session_state.active_chat == cid:
+                        if st.session_state.chats:
+                            st.session_state.active_chat = next(iter(st.session_state.chats))
+                        else:
+                            new_chat()
+                    st.rerun()
 
     st.divider()
     st.subheader("Settings")
@@ -106,36 +152,51 @@ for msg in messages:
         with st.chat_message(msg["role"], avatar=avatar):
             st.markdown(msg["content"])
 
-if prompt := st.chat_input("Type your message..."):
+has_assistant_reply = any(m["role"] == "assistant" for m in messages)
+
+if has_assistant_reply:
+    if st.button("Regenerate response", icon=":material/refresh:"):
+        while messages and messages[-1]["role"] != "user":
+            messages.pop()
+        st.session_state.regenerate = True
+        st.rerun()
+
+prompt = st.chat_input("Type your message...")
+
+if prompt:
     messages.append({"role": "user", "content": prompt})
     if active_chat["title"] == "New Chat":
         active_chat["title"] = prompt[:30] + ("..." if len(prompt) > 30 else "")
 
-    with st.chat_message("user", avatar=":material/person:"):
-        st.markdown(prompt)
+if prompt or st.session_state.get("regenerate"):
+    st.session_state.regenerate = False
+
+    if prompt:
+        with st.chat_message("user", avatar=":material/person:"):
+            st.markdown(prompt)
 
     with st.chat_message("assistant", avatar=":material/bolt:"):
         placeholder = st.empty()
         partial = ""
         start_time = time.time()
+        error_msg = None
 
-        stream = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            temperature=temperature,
-            stream=True,
-        )
+        try:
+            for delta in run_completion(messages, MODEL, temperature):
+                partial += delta
+                placeholder.markdown(partial + "▌")
+            placeholder.markdown(partial)
+        except RuntimeError as e:
+            error_msg = str(e)
+            placeholder.error(error_msg)
 
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
-            partial += delta
-            placeholder.markdown(partial + "▌")
+        if not error_msg:
+            elapsed = time.time() - start_time
+            word_count = len(partial.split())
+            st.caption(f"{word_count} words · {elapsed:.1f}s")
 
-        placeholder.markdown(partial)
-
-        elapsed = time.time() - start_time
-        word_count = len(partial.split())
-        st.caption(f"{word_count} words · {elapsed:.1f}s")
-
-    messages.append({"role": "assistant", "content": partial})
-    st.rerun()
+    if not error_msg:
+        messages.append({"role": "assistant", "content": partial})
+    else:
+        if messages and messages[-1]["role"] == "user":
+            messages.pop()
