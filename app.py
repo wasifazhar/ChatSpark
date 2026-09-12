@@ -97,9 +97,12 @@ if "active_chat" not in st.session_state or st.session_state.active_chat not in 
 
 def run_completion(messages, model, temperature):
     try:
+        api_messages = [
+            {"role": m["role"], "content": m["content"]} for m in messages
+        ]
         stream = client.chat.completions.create(
             model=model,
-            messages=messages,
+            messages=api_messages,
             temperature=temperature,
             stream=True,
         )
