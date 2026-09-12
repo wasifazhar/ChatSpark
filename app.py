@@ -89,7 +89,7 @@ with st.sidebar:
         use_container_width=True,
     )
 
-st.title("🤖 AI Chatbot")
+st.title("🤖ChatSpark")
 
 active_chat = st.session_state.chats[st.session_state.active_chat]
 messages = active_chat["messages"]
