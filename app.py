@@ -1,6 +1,9 @@
 import os
 import uuid
 import time
+import json
+import sqlite3
+from datetime import datetime
 import streamlit as st
 from groq import Groq, APIStatusError, APIConnectionError
 
@@ -15,6 +18,64 @@ MODEL_OPTIONS = {
 }
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+DB_PATH = "chatspark.db"
+
+
+# ---------- Persistence layer (SQLite) ----------
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chats (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            system_prompt TEXT,
+            messages TEXT,
+            updated_at TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def save_chat(conn, chat_id, chat):
+    conn.execute(
+        "REPLACE INTO chats (id, title, system_prompt, messages, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (
+            chat_id,
+            chat["title"],
+            chat["messages"][0]["content"],
+            json.dumps(chat["messages"]),
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+
+
+def delete_chat_db(conn, chat_id):
+    conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    conn.commit()
+
+
+def load_all_chats(conn):
+    rows = conn.execute(
+        "SELECT id, title, messages FROM chats ORDER BY updated_at DESC"
+    ).fetchall()
+    return {row[0]: {"title": row[1], "messages": json.loads(row[2])} for row in rows}
+
+
+# ---------- App state ----------
+
+conn = get_db()
+
+if "chats" not in st.session_state:
+    st.session_state.chats = load_all_chats(conn)
+if "system_prompt" not in st.session_state:
+    st.session_state.system_prompt = DEFAULT_SYSTEM_PROMPT
+if "renaming" not in st.session_state:
+    st.session_state.renaming = None
+if "search_query" not in st.session_state:
+    st.session_state.search_query = ""
 
 
 def new_chat():
@@ -24,10 +85,17 @@ def new_chat():
         "messages": [{"role": "system", "content": st.session_state.system_prompt}],
     }
     st.session_state.active_chat = chat_id
+    save_chat(conn, chat_id, st.session_state.chats[chat_id])
+
+
+if "active_chat" not in st.session_state or st.session_state.active_chat not in st.session_state.chats:
+    if st.session_state.chats:
+        st.session_state.active_chat = next(iter(st.session_state.chats))
+    else:
+        new_chat()
 
 
 def run_completion(messages, model, temperature):
-    """Stream a completion, yielding text chunks. Raises a friendly message on failure."""
     try:
         stream = client.chat.completions.create(
             model=model,
@@ -53,14 +121,7 @@ def run_completion(messages, model, temperature):
         raise RuntimeError("Couldn't reach Groq's servers. Check your connection and try again.")
 
 
-if "chats" not in st.session_state:
-    st.session_state.chats = {}
-if "system_prompt" not in st.session_state:
-    st.session_state.system_prompt = DEFAULT_SYSTEM_PROMPT
-if "active_chat" not in st.session_state or st.session_state.active_chat not in st.session_state.chats:
-    new_chat()
-if "renaming" not in st.session_state:
-    st.session_state.renaming = None
+# ---------- Sidebar ----------
 
 with st.sidebar:
     st.subheader("Chats")
@@ -68,9 +129,26 @@ with st.sidebar:
         new_chat()
         st.rerun()
 
-    for cid, chat in sorted(
-        st.session_state.chats.items(), key=lambda x: x[0], reverse=True
-    ):
+    st.session_state.search_query = st.text_input(
+        "Search chats", value=st.session_state.search_query,
+        placeholder="Search...", label_visibility="collapsed",
+        icon=":material/search:",
+    )
+
+    query = st.session_state.search_query.lower().strip()
+
+    def chat_matches(chat):
+        if not query:
+            return True
+        if query in chat["title"].lower():
+            return True
+        return any(query in m["content"].lower() for m in chat["messages"] if m["role"] != "system")
+
+    visible_chats = {
+        cid: c for cid, c in st.session_state.chats.items() if chat_matches(c)
+    }
+
+    for cid, chat in visible_chats.items():
         if st.session_state.renaming == cid:
             new_title = st.text_input(
                 "Rename", value=chat["title"], key=f"rename_input_{cid}", label_visibility="collapsed"
@@ -79,6 +157,7 @@ with st.sidebar:
             with rcols[0]:
                 if st.button("Save", key=f"save_{cid}", use_container_width=True, icon=":material/check:"):
                     chat["title"] = new_title or chat["title"]
+                    save_chat(conn, cid, chat)
                     st.session_state.renaming = None
                     st.rerun()
             with rcols[1]:
@@ -88,9 +167,10 @@ with st.sidebar:
         else:
             cols = st.columns([3, 1, 1])
             with cols[0]:
+                active_marker = ":material/radio_button_checked:" if cid == st.session_state.active_chat else ":material/chat_bubble:"
                 if st.button(
                     chat["title"], key=f"select_{cid}", use_container_width=True,
-                    icon=":material/chat_bubble:",
+                    icon=active_marker,
                 ):
                     st.session_state.active_chat = cid
                     st.rerun()
@@ -100,6 +180,7 @@ with st.sidebar:
                     st.rerun()
             with cols[2]:
                 if st.button("", key=f"delete_{cid}", icon=":material/delete:"):
+                    delete_chat_db(conn, cid)
                     del st.session_state.chats[cid]
                     if st.session_state.active_chat == cid:
                         if st.session_state.chats:
@@ -107,6 +188,9 @@ with st.sidebar:
                         else:
                             new_chat()
                     st.rerun()
+
+    if query and not visible_chats:
+        st.caption("No chats match your search.")
 
     st.divider()
     st.subheader("Settings")
@@ -124,6 +208,7 @@ with st.sidebar:
             "role": "system",
             "content": new_system_prompt,
         }
+        save_chat(conn, st.session_state.active_chat, st.session_state.chats[st.session_state.active_chat])
 
     st.divider()
     active = st.session_state.chats[st.session_state.active_chat]
@@ -141,6 +226,8 @@ with st.sidebar:
         icon=":material/download:",
     )
 
+# ---------- Main chat area ----------
+
 st.title("ChatSpark")
 
 active_chat = st.session_state.chats[st.session_state.active_chat]
@@ -151,6 +238,8 @@ for msg in messages:
         avatar = ":material/person:" if msg["role"] == "user" else ":material/bolt:"
         with st.chat_message(msg["role"], avatar=avatar):
             st.markdown(msg["content"])
+            if "timestamp" in msg:
+                st.caption(msg["timestamp"])
 
 has_assistant_reply = any(m["role"] == "assistant" for m in messages)
 
@@ -164,9 +253,14 @@ if has_assistant_reply:
 prompt = st.chat_input("Type your message...")
 
 if prompt:
-    messages.append({"role": "user", "content": prompt})
+    messages.append({
+        "role": "user",
+        "content": prompt,
+        "timestamp": datetime.now().strftime("%H:%M"),
+    })
     if active_chat["title"] == "New Chat":
         active_chat["title"] = prompt[:30] + ("..." if len(prompt) > 30 else "")
+    save_chat(conn, st.session_state.active_chat, active_chat)
 
 if prompt or st.session_state.get("regenerate"):
     st.session_state.regenerate = False
@@ -196,7 +290,12 @@ if prompt or st.session_state.get("regenerate"):
             st.caption(f"{word_count} words · {elapsed:.1f}s")
 
     if not error_msg:
-        messages.append({"role": "assistant", "content": partial})
+        messages.append({
+            "role": "assistant",
+            "content": partial,
+            "timestamp": datetime.now().strftime("%H:%M"),
+        })
+        save_chat(conn, st.session_state.active_chat, active_chat)
     else:
         if messages and messages[-1]["role"] == "user":
             messages.pop()
