@@ -44,6 +44,13 @@ def get_db():
             updated_at TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            username TEXT,
+            created_at TEXT
+        )
+    """)
     conn.commit()
 
     # Migrate older DBs created before the `username` column existed
@@ -53,6 +60,28 @@ def get_db():
         conn.commit()
 
     return conn
+
+
+def create_session(conn, username):
+    token = secrets.token_hex(24)
+    conn.execute(
+        "INSERT INTO sessions (token, username, created_at) VALUES (?, ?, ?)",
+        (token, username, datetime.now().isoformat()),
+    )
+    conn.commit()
+    return token
+
+
+def get_session_user(conn, token):
+    row = conn.execute(
+        "SELECT username FROM sessions WHERE token = ?", (token,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def delete_session(conn, token):
+    conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    conn.commit()
 
 
 def hash_password(password, salt):
@@ -117,8 +146,15 @@ conn = get_db()
 # ---------- Auth (guest by default, login/signup optional via sidebar) ----------
 
 if "user" not in st.session_state:
-    st.session_state.user = f"guest_{uuid.uuid4().hex[:8]}"
-    st.session_state.is_guest = True
+    session_token = st.query_params.get("session")
+    restored_user = get_session_user(conn, session_token) if session_token else None
+
+    if restored_user:
+        st.session_state.user = restored_user
+        st.session_state.is_guest = False
+    else:
+        st.session_state.user = f"guest_{uuid.uuid4().hex[:8]}"
+        st.session_state.is_guest = True
 
 username = st.session_state.user
 
@@ -209,6 +245,8 @@ with st.sidebar:
                     submitted = st.form_submit_button("Log in", use_container_width=True)
                     if submitted:
                         if verify_user(conn, login_username, login_password):
+                            token = create_session(conn, login_username)
+                            st.query_params["session"] = token
                             st.session_state.user = login_username
                             st.session_state.pop("is_guest", None)
                             st.session_state.pop("chats", None)
@@ -226,6 +264,8 @@ with st.sidebar:
                         if not new_username or not new_password:
                             st.error("Username and password can't be empty.")
                         elif create_user(conn, new_username, new_password):
+                            token = create_session(conn, new_username)
+                            st.query_params["session"] = token
                             st.session_state.user = new_username
                             st.session_state.pop("is_guest", None)
                             st.session_state.pop("chats", None)
@@ -236,6 +276,10 @@ with st.sidebar:
     else:
         st.caption(f"Logged in as **{username}**")
         if st.button("Log out", use_container_width=True, icon=":material/logout:"):
+            token = st.query_params.get("session")
+            if token:
+                delete_session(conn, token)
+                del st.query_params["session"]
             st.session_state.user = f"guest_{uuid.uuid4().hex[:8]}"
             st.session_state.is_guest = True
             st.session_state.pop("chats", None)
