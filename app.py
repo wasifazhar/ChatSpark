@@ -3,7 +3,7 @@ import streamlit as st
 from groq import Groq
 
 st.set_page_config(page_title="ChatSpark", page_icon="🤖")
-st.title("AI Chatbot")
+st.title("ChatSpark")
 
 api_key = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
 client = Groq(api_key=api_key)
