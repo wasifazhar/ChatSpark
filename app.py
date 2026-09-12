@@ -114,7 +114,7 @@ if "user" not in st.session_state:
 
 if not st.session_state.user:
     st.title("ChatSpark")
-    login_tab, signup_tab = st.tabs(["Log in", "Sign up"])
+    login_tab, signup_tab, guest_tab = st.tabs(["Log in", "Sign up", "Continue as guest"])
 
     with login_tab:
         with st.form("login_form"):
@@ -141,6 +141,13 @@ if not st.session_state.user:
                 else:
                     st.error("That username is already taken.")
 
+    with guest_tab:
+        st.caption("No account needed. Your chats won't be saved after you close or refresh the tab.")
+        if st.button("Continue as guest", use_container_width=True, icon=":material/person_outline:"):
+            st.session_state.user = f"guest_{uuid.uuid4().hex[:8]}"
+            st.session_state.is_guest = True
+            st.rerun()
+
     st.stop()
 
 username = st.session_state.user
@@ -149,13 +156,26 @@ username = st.session_state.user
 # ---------- App state (scoped to logged-in user) ----------
 
 if "chats" not in st.session_state:
-    st.session_state.chats = load_user_chats(conn, username)
+    if st.session_state.get("is_guest"):
+        st.session_state.chats = {}
+    else:
+        st.session_state.chats = load_user_chats(conn, username)
 if "system_prompt" not in st.session_state:
     st.session_state.system_prompt = DEFAULT_SYSTEM_PROMPT
 if "renaming" not in st.session_state:
     st.session_state.renaming = None
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
+
+
+def persist_chat(chat_id, chat):
+    if not st.session_state.get("is_guest"):
+        save_chat(conn, chat_id, username, chat)
+
+
+def persist_delete(chat_id):
+    if not st.session_state.get("is_guest"):
+        delete_chat_db(conn, chat_id)
 
 
 def new_chat():
@@ -165,7 +185,7 @@ def new_chat():
         "messages": [{"role": "system", "content": st.session_state.system_prompt}],
     }
     st.session_state.active_chat = chat_id
-    save_chat(conn, chat_id, username, st.session_state.chats[chat_id])
+    persist_chat(chat_id, st.session_state.chats[chat_id])
 
 
 if "active_chat" not in st.session_state or st.session_state.active_chat not in st.session_state.chats:
@@ -207,9 +227,13 @@ def run_completion(messages, model, temperature):
 # ---------- Sidebar ----------
 
 with st.sidebar:
-    st.caption(f"Logged in as **{username}**")
+    if st.session_state.get("is_guest"):
+        st.caption(f"Browsing as **guest** · chats won't be saved")
+    else:
+        st.caption(f"Logged in as **{username}**")
     if st.button("Log out", use_container_width=True, icon=":material/logout:"):
         st.session_state.user = None
+        st.session_state.pop("is_guest", None)
         st.session_state.pop("chats", None)
         st.session_state.pop("active_chat", None)
         st.rerun()
@@ -248,7 +272,7 @@ with st.sidebar:
             with rcols[0]:
                 if st.button("Save", key=f"save_{cid}", use_container_width=True, icon=":material/check:"):
                     chat["title"] = new_title or chat["title"]
-                    save_chat(conn, cid, username, chat)
+                    persist_chat(cid, chat)
                     st.session_state.renaming = None
                     st.rerun()
             with rcols[1]:
@@ -271,7 +295,7 @@ with st.sidebar:
                     st.rerun()
             with cols[2]:
                 if st.button("", key=f"delete_{cid}", icon=":material/delete:"):
-                    delete_chat_db(conn, cid)
+                    persist_delete(cid)
                     del st.session_state.chats[cid]
                     if st.session_state.active_chat == cid:
                         if st.session_state.chats:
@@ -299,7 +323,7 @@ with st.sidebar:
             "role": "system",
             "content": new_system_prompt,
         }
-        save_chat(conn, st.session_state.active_chat, username, st.session_state.chats[st.session_state.active_chat])
+        persist_chat(st.session_state.active_chat, st.session_state.chats[st.session_state.active_chat])
 
     st.divider()
     active = st.session_state.chats[st.session_state.active_chat]
@@ -351,7 +375,7 @@ if prompt:
     })
     if active_chat["title"] == "New Chat":
         active_chat["title"] = prompt[:30] + ("..." if len(prompt) > 30 else "")
-    save_chat(conn, st.session_state.active_chat, username, active_chat)
+    persist_chat(st.session_state.active_chat, active_chat)
 
 if prompt or st.session_state.get("regenerate"):
     st.session_state.regenerate = False
@@ -386,7 +410,7 @@ if prompt or st.session_state.get("regenerate"):
             "content": partial,
             "timestamp": datetime.now().strftime("%H:%M"),
         })
-        save_chat(conn, st.session_state.active_chat, username, active_chat)
+        persist_chat(st.session_state.active_chat, active_chat)
     else:
         if messages and messages[-1]["role"] == "user":
             messages.pop()
