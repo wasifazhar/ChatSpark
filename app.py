@@ -8,7 +8,20 @@ st.title("AI Chatbot")
 api_key = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
 client = Groq(api_key=api_key)
 
-MODEL = "openai/gpt-oss-20b"
+MODEL_OPTIONS = {
+    "GPT-OSS 20B (fast)": "openai/gpt-oss-20b",
+    "GPT-OSS 120B (smarter)": "openai/gpt-oss-120b",
+}
+
+with st.sidebar:
+    st.subheader("Settings")
+    selected_label = st.selectbox("Model", list(MODEL_OPTIONS.keys()))
+    MODEL = MODEL_OPTIONS[selected_label]
+    if st.button("Clear chat"):
+        st.session_state.messages = [
+            {"role": "system", "content": "You are a helpful assistant."}
+        ]
+        st.rerun()
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
