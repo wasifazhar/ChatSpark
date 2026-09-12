@@ -4,7 +4,7 @@ import time
 import streamlit as st
 from groq import Groq
 
-st.set_page_config(page_title="ChatSpark", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="ChatSpark", page_icon=":material/bolt:", layout="wide")
 
 api_key = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
 client = Groq(api_key=api_key)
@@ -34,8 +34,8 @@ if "active_chat" not in st.session_state or st.session_state.active_chat not in 
     new_chat()
 
 with st.sidebar:
-    st.subheader("💬 Chats")
-    if st.button("➕ New Chat", use_container_width=True):
+    st.subheader("Chats")
+    if st.button("New Chat", use_container_width=True, icon=":material/add:"):
         new_chat()
         st.rerun()
 
@@ -44,11 +44,16 @@ with st.sidebar:
     ):
         cols = st.columns([4, 1])
         with cols[0]:
-            if st.button(chat["title"], key=f"select_{cid}", use_container_width=True):
+            if st.button(
+                chat["title"],
+                key=f"select_{cid}",
+                use_container_width=True,
+                icon=":material/chat_bubble:",
+            ):
                 st.session_state.active_chat = cid
                 st.rerun()
         with cols[1]:
-            if st.button("🗑️", key=f"delete_{cid}"):
+            if st.button("", key=f"delete_{cid}", icon=":material/delete:"):
                 del st.session_state.chats[cid]
                 if st.session_state.active_chat == cid:
                     if st.session_state.chats:
@@ -58,7 +63,7 @@ with st.sidebar:
                 st.rerun()
 
     st.divider()
-    st.subheader("⚙️ Settings")
+    st.subheader("Settings")
     selected_label = st.selectbox("Model", list(MODEL_OPTIONS.keys()))
     MODEL = MODEL_OPTIONS[selected_label]
 
@@ -82,21 +87,23 @@ with st.sidebar:
         if m["role"] != "system"
     )
     st.download_button(
-        "⬇️ Export chat",
+        "Export chat",
         data=chat_text,
         file_name=f"chat_{st.session_state.active_chat[:8]}.txt",
         mime="text/plain",
         use_container_width=True,
+        icon=":material/download:",
     )
 
-st.title("🤖ChatSpark")
+st.title("ChatSpark")
 
 active_chat = st.session_state.chats[st.session_state.active_chat]
 messages = active_chat["messages"]
 
 for msg in messages:
     if msg["role"] != "system":
-        with st.chat_message(msg["role"]):
+        avatar = ":material/person:" if msg["role"] == "user" else ":material/bolt:"
+        with st.chat_message(msg["role"], avatar=avatar):
             st.markdown(msg["content"])
 
 if prompt := st.chat_input("Type your message..."):
@@ -104,10 +111,10 @@ if prompt := st.chat_input("Type your message..."):
     if active_chat["title"] == "New Chat":
         active_chat["title"] = prompt[:30] + ("..." if len(prompt) > 30 else "")
 
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar=":material/person:"):
         st.markdown(prompt)
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=":material/bolt:"):
         placeholder = st.empty()
         partial = ""
         start_time = time.time()
