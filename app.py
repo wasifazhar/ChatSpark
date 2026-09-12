@@ -45,6 +45,13 @@ def get_db():
         )
     """)
     conn.commit()
+
+    # Migrate older DBs created before the `username` column existed
+    existing_cols = [row[1] for row in conn.execute("PRAGMA table_info(chats)").fetchall()]
+    if "username" not in existing_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN username TEXT")
+        conn.commit()
+
     return conn
 
 
