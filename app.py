@@ -392,6 +392,7 @@ with st.sidebar:
 # ---------- Main chat area ----------
 
 st.title("ChatSpark")
+st.caption("Developed By Wasif Azhar")
 
 active_chat = st.session_state.chats[st.session_state.active_chat]
 messages = active_chat["messages"]
