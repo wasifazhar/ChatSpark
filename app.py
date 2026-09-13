@@ -19,7 +19,11 @@ MODEL_OPTIONS = {
     "GPT-OSS 120B (smarter)": "openai/gpt-oss-120b",
 }
 
-DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful assistant. If the user asks who made you, who created you, "
+    "who developed you, or anything similar, respond that you were developed by "
+    "Wasif Azhar."
+)
 DB_PATH = "chatspark.db"
 
 
